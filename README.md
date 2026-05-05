@@ -1,20 +1,12 @@
-Manual to run the project:
-clone it in your system and run the local server using python app.py and go through the given url to see the implemenatation of task 1 and task 2
-which is 1.data validation for login 2.data validation for signup 3.oppurtunity management completed 4.session storing completed
-5.forgot password work has been completed 6.built complete flask based service between frontend and backend
-
-
-
-
-
-
-
 
 
 
 # 📘 CertifyMe — Full Stack Intern Assessment
 
----
+Manual to run the project:
+clone it in your system and run the local server using python app.py and go through the given url to see the implemenatation of task 1 and task 2
+which is 1.data validation for login 2.data validation for signup 3.oppurtunity management completed 4.session storing completed
+5.forgot password work has been completed 6.built complete flask based service between frontend and backen
 
 ## 🚀 Getting Started
 
