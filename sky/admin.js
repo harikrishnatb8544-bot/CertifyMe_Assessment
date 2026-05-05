@@ -1,4 +1,5 @@
 const captchas = { login:'', signup:'', forgot:'' };
+let editingOpportunityId = null;
 function generateCaptcha(type) {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     let code = '';
@@ -65,30 +66,143 @@ function checkStrength(val) {
     document.getElementById('strengthLabel').textContent = val.length > 0 ? labels[score] : '';
 }
 
+function initialsFromName(name) {
+    return String(name || '')
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .map(part => part.charAt(0).toUpperCase())
+        .join('') || 'AD';
+}
+
+function renderAdminOpportunities(opportunities) {
+    const grid = document.querySelector('.opportunities-grid');
+    if (!grid) return;
+
+    grid.innerHTML = '';
+    if (!Array.isArray(opportunities) || opportunities.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'opportunity-card';
+        emptyState.innerHTML = `
+            <div class="opportunity-card-header">
+                <h5>No opportunities yet</h5>
+                <div class="opportunity-meta">
+                    <span>Waiting for your first opportunity</span>
+                </div>
+            </div>
+            <p class="opportunity-description">This account has no saved opportunities yet. When opportunities are created for this admin, they will appear here.</p>
+        `;
+        grid.appendChild(emptyState);
+        return;
+    }
+
+    opportunities.forEach(opportunity => {
+        const card = document.createElement('div');
+        card.className = 'opportunity-card';
+        const skills = Array.isArray(opportunity.skills) ? opportunity.skills : [];
+        const applicantsLabel = opportunity.max_applicants ? `${opportunity.max_applicants} applicants` : '0 applicants';
+
+        card.innerHTML = `
+            <div class="opportunity-card-header">
+                <h5>${escapeHtml(opportunity.name)}</h5>
+                <div class="opportunity-meta">
+                    <span>${escapeHtml(opportunity.category || 'Uncategorized')}</span>
+                    <span>${escapeHtml(opportunity.duration)}</span>
+                    <span>${escapeHtml(opportunity.start_date)}</span>
+                </div>
+            </div>
+            <p class="opportunity-description">${escapeHtml(opportunity.description)}</p>
+            <div class="opportunity-skills">
+                <div class="opportunity-skills-label">Skills You'll Gain</div>
+                <div class="skills-tags">${skills.map(skill => `<span class="skill-tag">${escapeHtml(skill)}</span>`).join('')}</div>
+            </div>
+            <div class="opportunity-footer">
+                <span class="applicants-count">${escapeHtml(applicantsLabel)}</span>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button class="view-course-btn" style="width: auto; padding: 8px 16px;">View Details</button>
+                    <button class="view-course-btn" style="width: auto; padding: 8px 16px;">Edit</button>
+                    <button class="view-course-btn" style="width: auto; padding: 8px 16px;">Delete</button>
+                </div>
+            </div>
+        `;
+
+        const buttons = card.querySelectorAll('.view-course-btn');
+        buttons[0].addEventListener('click', function() {
+            openOpportunityDetails(opportunity.name, {
+                duration: opportunity.duration,
+                startDate: opportunity.start_date,
+                description: opportunity.description,
+                skills: skills,
+                applicants: opportunity.max_applicants || 0,
+                futureOpportunities: opportunity.future_opportunities || '',
+                prerequisites: ''
+            });
+        });
+        buttons[1].addEventListener('click', function() {
+            startEditOpportunity(opportunity);
+        });
+        buttons[2].addEventListener('click', async function() {
+            await confirmDeleteOpportunity(opportunity.id);
+        });
+
+        grid.appendChild(card);
+    });
+}
+
 // ===== SHOW DASHBOARD =====
-function showDashboard(email) {
+function showDashboard(admin, opportunities = []) {
     document.getElementById('authWrapper').style.display = 'none';
     document.getElementById('dashboardWrapper').classList.add('active');
     document.body.style.alignItems = 'stretch';
 
-    // Personalize
-    const name = email.split('@')[0];
-    const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+    const displayName = admin && admin.full_name ? admin.full_name : ((admin && admin.email) ? admin.email.split('@')[0] : 'Admin');
     document.getElementById('dashName').textContent = displayName;
-    document.getElementById('dashAvatar').textContent = displayName.substring(0, 2).toUpperCase();
+    document.getElementById('dashAvatar').textContent = initialsFromName(displayName);
+    renderAdminOpportunities(opportunities);
 
-    // Show menu toggle on mobile
-    if (window.innerWidth <= 768) {
+    if (window.innerWidth <= 768 && document.getElementById('menuToggle')) {
         document.getElementById('menuToggle').style.display = 'flex';
     }
 }
 
-function handleLogout() {
+async function handleLogout() {
+    try {
+        await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+    } catch (_error) {
+        // Clear local UI even if the request fails.
+    }
+
     document.getElementById('dashboardWrapper').classList.remove('active');
     document.getElementById('authWrapper').style.display = 'flex';
     document.body.style.alignItems = '';
+    renderAdminOpportunities([]);
     showToast('Signed out successfully');
     showPage('loginPage');
+}
+
+async function loadAdminOpportunities() {
+    try {
+        const response = await fetch('/api/opportunities');
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            if (response.status === 401) {
+                await handleLogout();
+                return;
+            }
+            showToast(data.message || 'Unable to load opportunities right now.');
+            return;
+        }
+
+        renderAdminOpportunities(data.opportunities || []);
+    } catch (_error) {
+        showToast('Network error. Unable to load opportunities.');
+    }
 }
 
 // ===== NAV ITEMS =====
@@ -117,6 +231,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         } else if (page === 'opportunity') {
             document.getElementById('opportunitySection').classList.add('active');
             document.getElementById('pageTitle').textContent = 'Opportunity Management';
+            loadAdminOpportunities();
         } else if (page === 'reports') {
             document.getElementById('reportsSection').classList.add('active');
             document.getElementById('pageTitle').textContent = 'Reports and Analytics';
@@ -314,11 +429,64 @@ document.getElementById('collaboratorCoursesModal').addEventListener('click', fu
 
 // ===== OPPORTUNITY MODAL =====
 function openOpportunityModal() {
+    if (!editingOpportunityId) {
+        resetOpportunityForm();
+    }
     document.getElementById('opportunityModal').classList.add('active');
 }
 
 function closeOpportunityModal() {
+    resetOpportunityForm();
     document.getElementById('opportunityModal').classList.remove('active');
+}
+
+function resetOpportunityForm() {
+    editingOpportunityId = null;
+    document.getElementById('opportunityModalTitle').textContent = 'Add New Opportunity';
+    document.getElementById('opportunitySubmitBtn').textContent = 'Create Opportunity';
+    document.getElementById('opportunityForm').reset();
+}
+
+function startEditOpportunity(opportunity) {
+    editingOpportunityId = opportunity.id;
+    document.getElementById('opportunityModalTitle').textContent = 'Edit Opportunity';
+    document.getElementById('opportunitySubmitBtn').textContent = 'Update Opportunity';
+    document.getElementById('oppName').value = opportunity.name || '';
+    document.getElementById('oppDuration').value = opportunity.duration || '';
+    document.getElementById('oppStartDate').value = opportunity.start_date || '';
+    document.getElementById('oppDescription').value = opportunity.description || '';
+    document.getElementById('oppSkills').value = Array.isArray(opportunity.skills) ? opportunity.skills.join(', ') : '';
+    document.getElementById('oppCategory').value = opportunity.category || '';
+    document.getElementById('oppFuture').value = opportunity.future_opportunities || '';
+    document.getElementById('oppMaxApplicants').value = opportunity.max_applicants || '';
+    document.getElementById('opportunityModal').classList.add('active');
+}
+
+async function confirmDeleteOpportunity(opportunityId) {
+    const confirmed = window.confirm('Are you sure you want to delete this opportunity?');
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/opportunities/${opportunityId}`, {
+            method: 'DELETE'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (response.status === 401) {
+                await handleLogout();
+                return;
+            }
+            showToast(data.message || 'Unable to delete opportunity right now.');
+            return;
+        }
+
+        showToast(data.message || 'Opportunity deleted successfully.');
+        await loadAdminOpportunities();
+    } catch (_error) {
+        showToast('Network error. Please try again.');
+    }
 }
 
 // Close modal when clicking outside
@@ -329,82 +497,79 @@ document.getElementById('opportunityModal').addEventListener('click', function(e
 });
 
 // Handle opportunity form submission
-        document.getElementById('opportunityForm').addEventListener('submit', function(e) {
-            e.preventDefault();
+document.getElementById('opportunityForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
 
-            // collect values
-            const name = document.getElementById('oppName').value.trim();
-            const duration = document.getElementById('oppDuration').value.trim();
-            const startDate = document.getElementById('oppStartDate').value;
-            const description = document.getElementById('oppDescription').value.trim();
-            const skillsRaw = document.getElementById('oppSkills').value.trim();
-            const category = document.getElementById('oppCategory').value;
-            const futureOpportunities = document.getElementById('oppFuture').value.trim();
-            const maxApplicants = document.getElementById('oppMaxApplicants').value.trim();
+    const allowedCategories = ['technology', 'business', 'design', 'marketing', 'data', 'other'];
+    const name = document.getElementById('oppName').value.trim();
+    const duration = document.getElementById('oppDuration').value.trim();
+    const startDate = document.getElementById('oppStartDate').value;
+    const description = document.getElementById('oppDescription').value.trim();
+    const skillsRaw = document.getElementById('oppSkills').value.trim();
+    const category = document.getElementById('oppCategory').value;
+    const futureOpportunities = document.getElementById('oppFuture').value.trim();
+    const maxApplicants = document.getElementById('oppMaxApplicants').value.trim();
+    const submitButton = this.querySelector('button[type="submit"]');
+    const originalButtonText = submitButton.textContent;
 
-            // basic validation
-            if (!name || !duration || !startDate || !description || !skillsRaw || !category || !futureOpportunities) {
-                showToast('Please fill all required fields');
+    if (!name || !duration || !startDate || !description || !skillsRaw || !category || !futureOpportunities) {
+        showToast('Please fill all required fields.');
+        return;
+    }
+
+    if (!allowedCategories.includes(category)) {
+        showToast('Please select a valid category.');
+        return;
+    }
+
+    const skills = skillsRaw.split(',').map(s => s.trim()).filter(Boolean);
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating...';
+
+    try {
+        const isEditing = Boolean(editingOpportunityId);
+        const response = await fetch(isEditing ? `/api/opportunities/${editingOpportunityId}` : '/api/opportunities', {
+            method: isEditing ? 'PUT' : 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                name: name,
+                duration: duration,
+                start_date: startDate,
+                description: description,
+                skills: skills,
+                category: category,
+                future_opportunities: futureOpportunities,
+                max_applicants: maxApplicants || null
+            })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (response.status === 401) {
+                await handleLogout();
                 return;
             }
+            if (data.errors) {
+                const firstError = Object.values(data.errors)[0];
+                showToast(firstError || 'Please check the form and try again.');
+            } else {
+                showToast(data.message || 'Unable to create opportunity right now.');
+            }
+            return;
+        }
 
-            // parse skills
-            const skills = skillsRaw.split(',').map(s => s.trim()).filter(Boolean);
-
-            // create opportunity card element
-            const card = document.createElement('div');
-            card.className = 'opportunity-card';
-
-            // header and meta
-            const headerHtml = `
-                <div class="opportunity-card-header">
-                    <h5>${escapeHtml(name)}</h5>
-                    <div class="opportunity-meta">
-                        <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${escapeHtml(duration)}</span>
-                        <span><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${escapeHtml(startDate)}</span>
-                    </div>
-                </div>
-                <p class="opportunity-description">${escapeHtml(description)}</p>
-            `;
-
-            // skills tags
-            const skillsHtml = `<div class="opportunity-skills"><div class="opportunity-skills-label">Skills You'll Gain</div><div class="skills-tags">
-                ${skills.map(s => `<span class="skill-tag">${escapeHtml(s)}</span>`).join('')}
-            </div></div>`;
-
-            // footer
-            const applicantsCount = maxApplicants ? `${parseInt(maxApplicants,10)} applicants` : '0 applicants';
-            const footerHtml = `
-                <div class="opportunity-footer">
-                    <span class="applicants-count">${escapeHtml(applicantsCount)}</span>
-                    <button class="view-course-btn" style="width: auto; padding: 8px 16px;">View Details</button>
-                </div>
-            `;
-
-            card.innerHTML = headerHtml + skillsHtml + footerHtml;
-
-            // wire up the View Details button to open details modal
-            const viewBtn = card.querySelector('.view-course-btn');
-            viewBtn.addEventListener('click', function() {
-                openOpportunityDetails(name, {
-                    duration: duration,
-                    startDate: startDate,
-                    description: description,
-                    skills: skills,
-                    applicants: maxApplicants ? parseInt(maxApplicants,10) : 0,
-                    futureOpportunities: futureOpportunities,
-                    prerequisites: ''
-                });
-            });
-
-            // append to grid
-            const grid = document.querySelector('.opportunities-grid');
-            if (grid) grid.appendChild(card);
-
-            showToast('Opportunity created successfully!');
-            closeOpportunityModal();
-            this.reset();
-        });
+        showToast(data.message || (editingOpportunityId ? 'Opportunity updated successfully.' : 'Opportunity created successfully!'));
+        closeOpportunityModal();
+        await loadAdminOpportunities();
+    } catch (_error) {
+        showToast('Network error. Please try again.');
+    } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = originalButtonText;
+    }
+});
 
         // small helper to avoid HTML injection when inserting text
         function escapeHtml(str) {
@@ -632,67 +797,218 @@ function filterVerifiers() {
 }
 
 // ===== LOGIN =====
-document.getElementById('loginForm').addEventListener('submit', function(e) {
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     clearAllErrors('loginForm');
     let valid = true;
-    const email = document.getElementById('loginEmail').value.trim();
-    const password = document.getElementById('loginPassword').value.trim();
+    const emailInput = document.getElementById('loginEmail');
+    const passwordInput = document.getElementById('loginPassword');
+    const email = emailInput.value.trim();
+    const password = passwordInput.value.trim();
     const captchaInput = document.getElementById('loginCaptchaInput').value.trim();
+    const rememberMe = this.querySelector('.remember-me input[type="checkbox"]').checked;
+    const submitButton = this.querySelector('button[type="submit"]');
+    const originalButtonText = submitButton.textContent;
 
-    if (!email || !isValidEmail(email)) { showError('loginEmailErr'); document.getElementById('loginEmail').classList.add('error'); valid = false; }
-    if (!password) { showError('loginPasswordErr','Please enter your password'); document.getElementById('loginPassword').classList.add('error'); valid = false; }
+    if (!email || !isValidEmail(email)) { showError('loginEmailErr'); emailInput.classList.add('error'); valid = false; }
+    if (!password) { showError('loginPasswordErr','Please enter your password'); passwordInput.classList.add('error'); valid = false; }
     if (!captchaInput) { showError('loginCaptchaErr','Please enter the captcha code'); valid = false; }
     else if (captchaInput !== captchas.login) { showError('loginCaptchaErr','Captcha does not match. Please try again.'); valid = false; generateCaptcha('login'); }
 
     if (!valid) { shakeForm('loginForm'); return; }
 
-    showToast('Login successful! Redirecting...');
-    setTimeout(() => showDashboard(email), 1200);
-    generateCaptcha('login');
+    submitButton.disabled = true;
+    submitButton.textContent = 'Signing In...';
+
+    try {
+        const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                email: email,
+                password: password,
+                remember_me: rememberMe
+            })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            if (response.status === 401) {
+                emailInput.classList.add('error');
+                passwordInput.classList.add('error');
+                showError('loginPasswordErr', data.message || 'Invalid email or password');
+            } else {
+                const errors = data.errors || {};
+                if (errors.email) {
+                    emailInput.classList.add('error');
+                    showError('loginEmailErr', errors.email);
+                }
+                if (errors.password) {
+                    passwordInput.classList.add('error');
+                    showError('loginPasswordErr', errors.password);
+                }
+                if (!Object.keys(errors).length) {
+                    showToast(data.message || 'Unable to sign in right now.');
+                }
+            }
+            generateCaptcha('login');
+            shakeForm('loginForm');
+            return;
+        }
+
+        showToast('Login successful! Redirecting...');
+        generateCaptcha('login');
+        setTimeout(() => showDashboard(data.admin, data.opportunities || []), 700);
+    } catch (_error) {
+        showToast('Network error. Please try again.');
+        shakeForm('loginForm');
+    } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = originalButtonText;
+    }
 });
 
 // ===== SIGNUP =====
-document.getElementById('signupForm').addEventListener('submit', function(e) {
+document.getElementById('signupForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     clearAllErrors('signupForm');
     let valid = true;
-    const name = document.getElementById('signupName').value.trim();
-    const email = document.getElementById('signupEmail').value.trim();
-    const password = document.getElementById('signupPassword').value.trim();
-    const confirmPassword = document.getElementById('signupConfirmPassword').value.trim();
-    const captchaInput = document.getElementById('signupCaptchaInput').value.trim();
+    const nameInput = document.getElementById('signupName');
+    const emailInput = document.getElementById('signupEmail');
+    const passwordInput = document.getElementById('signupPassword');
+    const confirmPasswordInput = document.getElementById('signupConfirmPassword');
+    const captchaInputEl = document.getElementById('signupCaptchaInput');
+    const submitButton = this.querySelector('button[type="submit"]');
+    const originalButtonText = submitButton.textContent;
 
-    if (!name) { showError('signupNameErr'); document.getElementById('signupName').classList.add('error'); valid = false; }
-    if (!email || !isValidEmail(email)) { showError('signupEmailErr'); document.getElementById('signupEmail').classList.add('error'); valid = false; }
-    if (!password || password.length < 8) { showError('signupPasswordErr'); document.getElementById('signupPassword').classList.add('error'); valid = false; }
-    if (!confirmPassword || password !== confirmPassword) { showError('signupConfirmPasswordErr'); document.getElementById('signupConfirmPassword').classList.add('error'); valid = false; }
+    const name = nameInput.value.trim();
+    const email = emailInput.value.trim();
+    const password = passwordInput.value.trim();
+    const confirmPassword = confirmPasswordInput.value.trim();
+    const captchaInput = captchaInputEl.value.trim();
+
+    if (!name) { showError('signupNameErr'); nameInput.classList.add('error'); valid = false; }
+    if (!email || !isValidEmail(email)) { showError('signupEmailErr'); emailInput.classList.add('error'); valid = false; }
+    if (!password || password.length < 8) { showError('signupPasswordErr'); passwordInput.classList.add('error'); valid = false; }
+    if (!confirmPassword || password !== confirmPassword) { showError('signupConfirmPasswordErr'); confirmPasswordInput.classList.add('error'); valid = false; }
     if (!captchaInput) { showError('signupCaptchaErr','Please enter the captcha code'); valid = false; }
     else if (captchaInput !== captchas.signup) { showError('signupCaptchaErr','Captcha does not match.'); valid = false; generateCaptcha('signup'); }
 
     if (!valid) { shakeForm('signupForm'); return; }
-    showToast('Account created successfully!');
-    generateCaptcha('signup');
-    this.reset(); checkStrength('');
-    setTimeout(() => showPage('loginPage'), 1500);
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating...';
+
+    try {
+        const response = await fetch('/api/auth/signup', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                full_name: name,
+                email: email,
+                password: password,
+                confirm_password: confirmPassword
+            })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            const errors = data.errors || {};
+            if (errors.full_name) {
+                showError('signupNameErr', errors.full_name);
+                nameInput.classList.add('error');
+            }
+            if (errors.email) {
+                showError('signupEmailErr', errors.email);
+                emailInput.classList.add('error');
+            }
+            if (errors.password) {
+                showError('signupPasswordErr', errors.password);
+                passwordInput.classList.add('error');
+            }
+            if (errors.confirm_password) {
+                showError('signupConfirmPasswordErr', errors.confirm_password);
+                confirmPasswordInput.classList.add('error');
+            }
+            if (!Object.keys(errors).length) {
+                showToast(data.message || 'Unable to create account right now.');
+            }
+            shakeForm('signupForm');
+            return;
+        }
+
+        showToast(data.message || 'Account created successfully!');
+        generateCaptcha('signup');
+        this.reset();
+        checkStrength('');
+        setTimeout(() => showPage('loginPage'), 1200);
+    } catch (_error) {
+        showToast('Network error. Please try again.');
+        shakeForm('signupForm');
+    } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = originalButtonText;
+    }
 });
 
 // ===== FORGOT =====
-document.getElementById('forgotForm').addEventListener('submit', function(e) {
+document.getElementById('forgotForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     clearAllErrors('forgotForm');
     let valid = true;
-    const email = document.getElementById('forgotEmail').value.trim();
+    const emailInput = document.getElementById('forgotEmail');
+    const email = emailInput.value.trim();
     const captchaInput = document.getElementById('forgotCaptchaInput').value.trim();
+    const submitButton = this.querySelector('button[type="submit"]');
+    const originalButtonText = submitButton.textContent;
 
-    if (!email || !isValidEmail(email)) { showError('forgotEmailErr'); document.getElementById('forgotEmail').classList.add('error'); valid = false; }
+    if (!email || !isValidEmail(email)) { showError('forgotEmailErr'); emailInput.classList.add('error'); valid = false; }
     if (!captchaInput) { showError('forgotCaptchaErr','Please enter the captcha code'); valid = false; }
     else if (captchaInput !== captchas.forgot) { showError('forgotCaptchaErr','Captcha does not match.'); valid = false; generateCaptcha('forgot'); }
 
     if (!valid) { shakeForm('forgotForm'); return; }
-    showToast('Reset link sent to your email!');
-    generateCaptcha('forgot');
-    this.reset();
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Sending...';
+
+    try {
+        const response = await fetch('/api/auth/forgot-password', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ email: email })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const errors = data.errors || {};
+            if (errors.email) {
+                showError('forgotEmailErr', errors.email);
+                emailInput.classList.add('error');
+            } else {
+                showToast(data.message || 'Unable to process your request right now.');
+            }
+            shakeForm('forgotForm');
+            return;
+        }
+
+        showToast(data.message || 'If an account with that email exists, a reset link has been generated.');
+        generateCaptcha('forgot');
+        this.reset();
+    } catch (_error) {
+        showToast('Network error. Please try again.');
+        shakeForm('forgotForm');
+    } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = originalButtonText;
+    }
 });
 
 // Clear errors on input
@@ -708,4 +1024,16 @@ document.querySelectorAll('input').forEach(input => {
 window.addEventListener('resize', () => {
     const toggle = document.getElementById('menuToggle');
     if (toggle) toggle.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
+});
+
+document.addEventListener('DOMContentLoaded', async function() {
+    try {
+        const response = await fetch('/api/auth/session');
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data.authenticated) {
+            showDashboard(data.admin, data.opportunities || []);
+        }
+    } catch (_error) {
+        // Leave the login page visible when session restore fails.
+    }
 });
